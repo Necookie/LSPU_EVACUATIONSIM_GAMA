@@ -24,7 +24,10 @@ global {
         }
         road_network <- as_edge_graph(road);
 
+        // =========================================================
         // 2. CREATE THE GATES (Manual Placement + Road Snapping)
+        // =========================================================
+        
         // Gate 1: Bottom Evacuation Zone 
         create gate number: 1 {
             point manual_target <- {600.0, 900.0}; 
@@ -37,25 +40,51 @@ global {
             location <- (road closest_to manual_target).location; 
         }
 
-        // 3. CREATE THE FIRE ORIGIN
+        // =========================================================
+        // 3. CREATE THE FIRE ORIGIN (Foolproof Center/Top-Left Filter)
+        // =========================================================
         create fire number: 1 {
-            location <- any_location_in(one_of(building));
+            // Filters out all buildings on the extreme right and bottom edges.
+            // Grabs only buildings where X is between 10%-60% and Y is between 10%-60% of the map size.
+            list<building> campus_buildings <- building where (
+                each.location.x > (shape.width * 0.1) and 
+                each.location.x < (shape.width * 0.6) and 
+                each.location.y > (shape.height * 0.1) and 
+                each.location.y < (shape.height * 0.6)
+            );
+            
+            // Pick a random building STRICTLY from that inner campus list
+            if (length(campus_buildings) > 0) {
+                location <- any_location_in(one_of(campus_buildings));
+            } else {
+                // Failsafe just in case the math gets weird
+                location <- any_location_in(one_of(building)); 
+            }
+            
             fire_radius <- 3.0; // Start small
         }
 
+        // =========================================================
         // 4. CREATE STUDENTS (Forced 50/50 Split)
+        // =========================================================
         create student number: total_students {
             location <- any_location_in(one_of(building));
         }
         
+        // Divide students evenly between the two gates
         int i <- 0;
         ask student {
-            if (even(i)) { my_gate <- gate[0]; } 
-            else { my_gate <- gate[1]; }
+            if (even(i)) { 
+                my_gate <- gate[0]; // Half to Gate 1 (Bottom)
+            } else { 
+                my_gate <- gate[1]; // Half to Gate 2 (Top-Right)
+            }
             i <- i + 1;
         }
 
+        // =========================================================
         // 5. CREATE RESPONDERS (Firefighters)
+        // =========================================================
         create responder number: 5 {
             location <- any_location_in(one_of(gate)); // Spawn at the gates
         }
@@ -88,22 +117,22 @@ species gate {
 species fire {
     float fire_radius;
     
-    // 1. Organic Growth: Grows slowly and randomly instead of a perfect line
+    // 1. Organic Growth: Grows slowly and randomly
     reflex spread {
         fire_radius <- fire_radius + rnd(0.0, 0.1); 
     }
     
-    // 2. Jumping Sparks: Small chance to spawn a new fire nearby (max 30 fires to prevent lag)
+    // 2. Jumping Sparks: Chance to spawn a new fire nearby
     reflex jump when: flip(0.04) and length(fire) < 30 {
         create fire number: 1 {
-            // Spawn anywhere within 15 meters of the parent fire
+            // Spawn within 15 meters of the parent fire
             location <- myself.location + {rnd(-15.0, 15.0), rnd(-15.0, 15.0)};
             fire_radius <- 1.0;
         }
     }
     
     aspect default {
-        // Randomly alter the opacity of the orange aura to make it "flicker"
+        // Randomly alter opacity for a flicker effect
         draw circle(fire_radius) color: rgb(255, rnd(80, 120), 0, rnd(100, 180)); 
         draw circle(fire_radius * 0.7) color: #red;            
         draw circle(fire_radius * 0.4) color: #yellow;         
@@ -115,6 +144,7 @@ species student skills: [moving] {
     bool is_safe <- false;
     bool is_casualty <- false;
 
+    // Behavior 1: Evacuate using the roads
     reflex evacuate when: !is_safe and !is_casualty {
         if (distance_to(self, my_gate.location) <= 2.5) {
             is_safe <- true;
@@ -124,7 +154,7 @@ species student skills: [moving] {
         }
     }
 
-    // UPDATED: Now checks distance to the *closest* fire spark, not just the original one
+    // Behavior 2: Check for fire casualties against the closest spark
     reflex check_fire when: !is_safe and !is_casualty {
         if (length(fire) > 0) {
             fire nearest_fire <- fire closest_to(self);
@@ -137,20 +167,20 @@ species student skills: [moving] {
 
     aspect default {
         if (is_safe) {
-            draw circle(3) color: #lime; 
+            draw circle(3) color: #lime; // Safe
         } else if (is_casualty) {
-            draw cross(5, 2) color: #black; 
+            draw cross(5, 2) color: #black; // Casualty
         } else {
-            draw circle(3) color: #cyan; 
+            draw circle(3) color: #cyan; // Evacuating
         }
     }
 }
 
 species responder skills: [moving] {
-    fire target_fire; // The specific spark this firetruck is hunting
+    fire target_fire;
 
     reflex fight_fire {
-        // If we don't have a target, or our target was put out, find a new one!
+        // Find a new fire if we don't have one or ours was put out
         if (target_fire = nil or dead(target_fire)) {
             if (length(fire) > 0) {
                 target_fire <- fire closest_to(self);
@@ -162,7 +192,7 @@ species responder skills: [moving] {
             // Drive towards it
             do goto target: target_fire on: road_network speed: 1.5; 
             
-            // If within hose range (15 meters), extinguish it!
+            // Extinguish it with a hose if within 15 meters
             if (distance_to(self, target_fire) <= 15.0) {
                 ask target_fire {
                     fire_radius <- fire_radius - 0.2; // Shrink the fire
@@ -177,7 +207,7 @@ species responder skills: [moving] {
     aspect default {
         draw square(6) color: #blue border: #white; 
         
-        // VISUAL TRICK: Draw a water hose line if we are actively putting out a fire!
+        // VISUAL TRICK: Draw a water hose line
         if (target_fire != nil and !dead(target_fire) and distance_to(self, target_fire) <= 15.0) {
             draw line([location, target_fire.location]) color: #cyan width: 2;
         }
